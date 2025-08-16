@@ -1,0 +1,44 @@
+version: '3.9'
+
+services:
+  app:
+    build: .
+    container_name: nestjs_app
+    env_file:
+      - .env
+    ports:
+      - '${APP_PORT}:3000'
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - app-network
+
+  postgres:
+    image: postgres:15
+    container_name: postgres_db
+    env_file:
+      - .env
+    ports:
+      - '${POSTGRES_PORT}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+  redis:
+    image: redis:7
+    container_name: redis
+    env_file:
+      - .env
+    ports:
+      - '${REDIS_PORT}:6379'
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  pgdata:
