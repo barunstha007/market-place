@@ -43,6 +43,15 @@ $ pnpm run start:dev
 
 # production mode
 $ pnpm run start:prod
+
+#Connect  redis server :
+$ sudo systemctl start redis-server
+
+#run seeder and migration :
+$ npx typeorm-ts-node-commonjs migration:run -d src/data-source.ts
+
+#check redis connection:
+$ redis-cli -h 127.0.0.1 -p 6379 ping
 ```
 
 ## Run tests
