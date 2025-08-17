@@ -20,7 +20,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { OrderProcessor } from './order.processor';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { OrderGateway } from './order.gateway';
-import { instanceToPlain } from 'class-transformer';
 @Injectable()
 export class OrderService {
   constructor(
@@ -57,18 +56,23 @@ export class OrderService {
 
       if (!product)
         throw new NotFoundException(`Product ${item.productId} not found`);
+
       if (product.stock < item.quantity)
         throw new BadRequestException(`Insufficient stock for ${product.name}`);
 
+      // Decrease stock
+      product.stock -= item.quantity;
+      await this.productRepository.update(item.productId, {
+        stock: product.stock,
+      });
+
       totalAmount += Number(product.price) * item.quantity;
 
-      const orderItem = {
+      orderItems.push({
         product,
         quantity: item.quantity,
         price: product.price,
-      };
-
-      orderItems.push(orderItem);
+      });
     }
 
     const orderData = {
@@ -85,8 +89,10 @@ export class OrderService {
       orderId: order.id,
       status: order.status,
     });
+
     // WebSocket notifications
     this.orderGateway.sendNewOrderNotification(order.id);
+
     return order;
   }
 
@@ -129,20 +135,20 @@ export class OrderService {
     }
 
     // 2. Build query
-    const qb = this.orderQueryRepository
+    const orderItems = this.orderQueryRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.items', 'item')
       .leftJoinAndSelect('item.product', 'product');
 
     if (!isAdmin) {
-      qb.where('order.userId = :userId', { userId });
+      orderItems.where('order.userId = :userId', { userId });
     }
 
     if (dto.status && dto.status !== 'all') {
-      qb.andWhere('order.status = :status', { status: dto.status });
+      orderItems.andWhere('order.status = :status', { status: dto.status });
     }
 
-    const [data, total] = await qb
+    const [data, total] = await orderItems
       .skip((page - 1) * limit)
       .take(limit)
       .getManyAndCount();
@@ -152,18 +158,32 @@ export class OrderService {
       total,
     };
 
+    //Set cache
     await this.cacheManager.set(cacheKey, result);
 
     return result;
   }
+  async invalidateOrdersCache(userId: number) {
+    const store = (this.cacheManager as any).store;
 
-  async invalidateOrdersCache(userId: number, isAdmin = false) {
-    const redisStore = this.cacheManager.stores[0] as any;
-    const client = redisStore.getClient();
-    const keyPrefix = `orders:${isAdmin ? 'resultin' : userId}:*`;
-    const keys = await client.keys(keyPrefix);
+    if (!store) {
+      console.error('Cache store not found!');
+      return;
+    }
+
+    const client = store.client;
+    if (!client) {
+      console.error('Redis client not found on cache store!');
+      return;
+    }
+
+    // Match all orders for this user
+    const pattern = `orders:${userId}:*`;
+    const keys = await client.keys(pattern);
+
     if (keys.length) {
-      await client.del(keys);
+      await client.del(...keys);
+      console.log('Deleted cache keys:', keys);
     }
   }
 
@@ -177,7 +197,7 @@ export class OrderService {
       where: { id: orderId },
     });
     // Invalidate cache for this user
-    // await this.invalidateOrdersCache(updatedOrder.userId);
+    await this.invalidateOrdersCache(updatedOrder.userId);
     // WebSocket notification
     this.orderGateway.sendOrderStatusUpdate(
       userId,
