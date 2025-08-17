@@ -20,6 +20,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { OrderProcessor } from './order.processor';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { OrderGateway } from './order.gateway';
+import { instanceToPlain } from 'class-transformer';
 @Injectable()
 export class OrderService {
   constructor(
@@ -112,23 +113,22 @@ export class OrderService {
     dto: GetOrdersDto,
     userId: number,
     isAdmin: boolean,
-  ): Promise<{ data: Order[]; total: number }> {
+  ): Promise<{ data: any[]; total: number }> {
     const page = dto.page || 1;
     const limit = dto.limit || 10;
-    const status = dto.status ? dto.status : 'all';
+    const status = dto.status || 'all';
+
     // Build unique cache key
     const cacheKey = `orders:${userId}:page=${page}:limit=${limit}:status=${status}`;
     // 1. Try cache first
-    const cached = await this.cacheManager.get<{
-      data: Order[];
-      total: number;
-    }>(cacheKey);
-    console.log({ cached });
+    const cached = await this.cacheManager.get<{ data: any[]; total: number }>(
+      cacheKey,
+    );
     if (cached) {
-      console.log('this is cached data', cached);
       return cached;
     }
 
+    // 2. Build query
     const qb = this.orderQueryRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.items', 'item')
@@ -138,7 +138,7 @@ export class OrderService {
       qb.where('order.userId = :userId', { userId });
     }
 
-    if (dto.status) {
+    if (dto.status && dto.status !== 'all') {
       qb.andWhere('order.status = :status', { status: dto.status });
     }
 
@@ -147,16 +147,20 @@ export class OrderService {
       .take(limit)
       .getManyAndCount();
 
-    const result = { data, total };
+    const result = {
+      data: JSON.parse(JSON.stringify(data)),
+      total,
+    };
 
-    // 3. Store in cache
-    await this.cacheManager.set(cacheKey, result, 60);
+    await this.cacheManager.set(cacheKey, result);
+
     return result;
   }
+
   async invalidateOrdersCache(userId: number, isAdmin = false) {
     const redisStore = this.cacheManager.stores[0] as any;
     const client = redisStore.getClient();
-    const keyPrefix = `orders:${isAdmin ? 'admin' : userId}:*`;
+    const keyPrefix = `orders:${isAdmin ? 'resultin' : userId}:*`;
     const keys = await client.keys(keyPrefix);
     if (keys.length) {
       await client.del(keys);
@@ -173,7 +177,7 @@ export class OrderService {
       where: { id: orderId },
     });
     // Invalidate cache for this user
-    await this.invalidateOrdersCache(updatedOrder.userId);
+    // await this.invalidateOrdersCache(updatedOrder.userId);
     // WebSocket notification
     this.orderGateway.sendOrderStatusUpdate(
       userId,
